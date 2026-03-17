@@ -1,0 +1,201 @@
+module Beacon.Internal exposing
+    ( PayloadKind(..)
+    , classifyPayload
+    , payloadToKind
+    , kindToString
+    , kindToContentType
+    , buildStringPayload
+    , buildJsonPayload
+    , buildFormPayload
+    , buildUrlEncodedPayload
+    )
+
+
+{-| Internal module for testable pure logic used by Beacon.
+
+This module extracts pure functions from the Beacon module so they can be
+tested independently of browser APIs. These functions handle payload
+classification and construction logic.
+
+-}
+
+
+import Json.Encode
+
+
+{-| Describes the kind of payload without carrying the data.
+
+Used to classify payloads for dispatch to the correct FFI function.
+Each kind maps to a different JavaScript type and Content-Type header.
+-}
+type PayloadKind
+    = StringKind
+    | JsonKind
+    | BytesKind
+    | FormKind
+    | UrlEncodedKind
+
+
+{-| Classify a payload description string into its kind.
+
+This is a pure function that maps payload type names to their kinds.
+Used internally by the beacon send pipeline.
+
+    classifyPayload "string" == Just StringKind
+    classifyPayload "json" == Just JsonKind
+    classifyPayload "bytes" == Just BytesKind
+    classifyPayload "form" == Just FormKind
+    classifyPayload "urlencoded" == Just UrlEncodedKind
+    classifyPayload "unknown" == Nothing
+
+-}
+classifyPayload : String -> Maybe PayloadKind
+classifyPayload tag =
+    if tag == "string" then
+        Just StringKind
+    else if tag == "json" then
+        Just JsonKind
+    else if tag == "bytes" then
+        Just BytesKind
+    else if tag == "form" then
+        Just FormKind
+    else if tag == "urlencoded" then
+        Just UrlEncodedKind
+    else
+        Nothing
+
+
+{-| Convert a PayloadKind to its string name.
+
+    kindToString StringKind == "string"
+    kindToString JsonKind == "json"
+    kindToString BytesKind == "bytes"
+    kindToString FormKind == "form"
+    kindToString UrlEncodedKind == "urlencoded"
+
+-}
+kindToString : PayloadKind -> String
+kindToString kind =
+    case kind of
+        StringKind ->
+            "string"
+
+        JsonKind ->
+            "json"
+
+        BytesKind ->
+            "bytes"
+
+        FormKind ->
+            "form"
+
+        UrlEncodedKind ->
+            "urlencoded"
+
+
+{-| Map a PayloadKind to its HTTP Content-Type header value.
+
+    kindToContentType StringKind == "text/plain;charset=UTF-8"
+    kindToContentType JsonKind == "application/json"
+
+-}
+kindToContentType : PayloadKind -> String
+kindToContentType kind =
+    case kind of
+        StringKind ->
+            "text/plain;charset=UTF-8"
+
+        JsonKind ->
+            "application/json"
+
+        BytesKind ->
+            "application/octet-stream"
+
+        FormKind ->
+            "multipart/form-data"
+
+        UrlEncodedKind ->
+            "application/x-www-form-urlencoded"
+
+
+{-| Get the PayloadKind tag from a numeric index.
+
+Used to map between the internal numeric payload representation
+and the named kind type.
+
+    payloadToKind 0 == Just StringKind
+    payloadToKind 1 == Just JsonKind
+    payloadToKind 2 == Just BytesKind
+    payloadToKind 3 == Just FormKind
+    payloadToKind 4 == Just UrlEncodedKind
+    payloadToKind 5 == Nothing
+
+-}
+payloadToKind : Int -> Maybe PayloadKind
+payloadToKind index =
+    if index == 0 then
+        Just StringKind
+    else if index == 1 then
+        Just JsonKind
+    else if index == 2 then
+        Just BytesKind
+    else if index == 3 then
+        Just FormKind
+    else if index == 4 then
+        Just UrlEncodedKind
+    else
+        Nothing
+
+
+{-| Build the string representation for a StringPayload.
+
+    buildStringPayload "hello" == "hello"
+
+-}
+buildStringPayload : String -> String
+buildStringPayload str =
+    str
+
+
+{-| Build the JSON string for a JsonPayload.
+
+Encodes the JSON value to a compact string suitable for sending.
+
+    buildJsonPayload (Json.Encode.int 42) == "42"
+
+-}
+buildJsonPayload : Json.Encode.Value -> String
+buildJsonPayload value =
+    Json.Encode.encode 0 value
+
+
+{-| Build the form data string from key-value pairs.
+
+Formats pairs as key=value separated by ampersands, suitable for
+debugging or logging FormData payloads.
+
+    buildFormPayload [ ( "a", "1" ), ( "b", "2" ) ] == "a=1&b=2"
+    buildFormPayload [] == ""
+
+-}
+buildFormPayload : List ( String, String ) -> String
+buildFormPayload pairs =
+    pairs
+        |> List.map (\pair -> Tuple.first pair ++ "=" ++ Tuple.second pair)
+        |> String.join "&"
+
+
+{-| Build the URL-encoded string from key-value pairs.
+
+Formats pairs as key=value separated by ampersands, suitable for
+debugging or logging URLSearchParams payloads.
+
+    buildUrlEncodedPayload [ ( "q", "test" ) ] == "q=test"
+    buildUrlEncodedPayload [] == ""
+
+-}
+buildUrlEncodedPayload : List ( String, String ) -> String
+buildUrlEncodedPayload pairs =
+    pairs
+        |> List.map (\pair -> Tuple.first pair ++ "=" ++ Tuple.second pair)
+        |> String.join "&"

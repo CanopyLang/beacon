@@ -1,0 +1,608 @@
+module Beacon exposing
+    ( Payload(..)
+    , SendResult(..)
+    , send
+    , sendJson
+    , sendString
+    , sendBytes
+    , sendForm
+    , sendUrlEncoded
+    , isSupported
+    , payloadToString
+    , sendResultToString
+    , isQueued
+    , isRejected
+    , payloadContentType
+    , encodePayloadAsString
+    , formatFormPairs
+    , formatUrlEncodedPairs
+    , payloadSummary
+    , mapPayloadString
+    , payloadPairCount
+    , isStringBased
+    , isBinaryPayload
+    , isPairBased
+    )
+
+
+{-| Beacon API for reliable fire-and-forget data transmission during page unload.
+
+The browser's `navigator.sendBeacon()` queues an HTTP POST request that is
+guaranteed to be sent even if the page is unloading. This is the recommended
+way to send analytics, error logs, and session data when the user leaves.
+
+Unlike `fetch` or `XMLHttpRequest`, beacon requests survive page navigation.
+The browser handles delivery in the background after the page is destroyed.
+
+The recommended trigger for sending beacons is the `visibilitychange` event
+(when the page becomes hidden), not `unload` or `beforeunload`. Use the
+`canopy/page-visibility` package for this.
+
+# Payload Types
+@docs Payload, payloadToString, payloadContentType, payloadSummary
+
+# Results
+@docs SendResult, sendResultToString, isQueued, isRejected
+
+# Sending
+@docs send, sendJson, sendString, sendBytes, sendForm, sendUrlEncoded
+
+# Support Detection
+@docs isSupported
+
+# Encoding Utilities
+@docs encodePayloadAsString, formatFormPairs, formatUrlEncodedPairs
+
+# Payload Inspection
+@docs mapPayloadString, payloadPairCount, isStringBased, isBinaryPayload, isPairBased
+
+-}
+
+
+import Bytes exposing (Bytes)
+import Json.Encode
+import Task exposing (Task)
+
+
+foreign import javascript "external/beacon.js" as BeaconFFI
+
+
+
+-- TYPES
+
+
+{-| The payload to send with a beacon.
+
+Corresponds to the data types accepted by `navigator.sendBeacon()`.
+Each variant maps to a different JavaScript type and Content-Type header:
+
+  - `StringPayload` sends a plain string (`text/plain;charset=UTF-8`).
+  - `JsonPayload` sends a JSON value as a Blob (`application/json`).
+  - `BytesPayload` sends raw binary data (`application/octet-stream`).
+  - `FormPayload` sends key-value pairs as FormData (`multipart/form-data`).
+  - `UrlEncodedPayload` sends key-value pairs as URLSearchParams
+    (`application/x-www-form-urlencoded`).
+
+-}
+type Payload
+    = StringPayload String
+    | JsonPayload Json.Encode.Value
+    | BytesPayload Bytes
+    | FormPayload (List ( String, String ))
+    | UrlEncodedPayload (List ( String, String ))
+
+
+{-| Result of a sendBeacon call.
+
+The browser returns a boolean indicating whether the data was successfully
+queued for transfer. This does NOT mean the server received it -- only that
+the browser accepted the request for background delivery.
+
+  - `Queued` means the browser accepted the data for delivery.
+  - `Rejected` means the browser refused (payload too large, API missing, etc).
+
+-}
+type SendResult
+    = Queued
+    | Rejected
+
+
+
+-- SENDING
+
+
+{-| Send a beacon with a custom payload type.
+
+    Beacon.send "/api/log" (Beacon.UrlEncodedPayload params) BeaconResult
+
+The message constructor receives a `SendResult` indicating whether the
+browser accepted the data for delivery.
+-}
+send : String -> Payload -> (SendResult -> msg) -> Cmd msg
+send url payload toMsg =
+    Task.perform toMsg (sendTask url payload)
+
+
+{-| Send a beacon with a JSON payload.
+
+This is the most common use case. The JSON value is serialized and sent
+as a Blob with `application/json` Content-Type, which most server APIs
+expect.
+
+    Beacon.sendJson "/api/analytics"
+        (Json.Encode.object
+            [ ( "event", Json.Encode.string "page_leave" )
+            , ( "duration_ms", Json.Encode.int 45000 )
+            ]
+        )
+        BeaconResult
+
+-}
+sendJson : String -> Json.Encode.Value -> (SendResult -> msg) -> Cmd msg
+sendJson url value toMsg =
+    send url (JsonPayload value) toMsg
+
+
+{-| Send a beacon with a string payload.
+
+    Beacon.sendString "/api/log" "User exited checkout" BeaconResult
+
+Sent with Content-Type `text/plain;charset=UTF-8`.
+-}
+sendString : String -> String -> (SendResult -> msg) -> Cmd msg
+sendString url str toMsg =
+    send url (StringPayload str) toMsg
+
+
+{-| Send a beacon with raw bytes.
+
+    Beacon.sendBytes "/api/binary-log" encodedData BeaconResult
+
+Sent as an ArrayBuffer with Content-Type `application/octet-stream`.
+-}
+sendBytes : String -> Bytes -> (SendResult -> msg) -> Cmd msg
+sendBytes url bytes toMsg =
+    send url (BytesPayload bytes) toMsg
+
+
+{-| Send a beacon with FormData payload.
+
+    Beacon.sendForm "/api/analytics"
+        [ ( "event", "page_leave" )
+        , ( "page", "/checkout" )
+        ]
+        BeaconResult
+
+Sent with Content-Type `multipart/form-data`.
+-}
+sendForm : String -> List ( String, String ) -> (SendResult -> msg) -> Cmd msg
+sendForm url pairs toMsg =
+    send url (FormPayload pairs) toMsg
+
+
+{-| Send a beacon with URL-encoded form data.
+
+    Beacon.sendUrlEncoded "/api/session/end"
+        [ ( "session_id", "abc123" )
+        , ( "duration_ms", "45000" )
+        ]
+        BeaconResult
+
+Sent with Content-Type `application/x-www-form-urlencoded`.
+-}
+sendUrlEncoded : String -> List ( String, String ) -> (SendResult -> msg) -> Cmd msg
+sendUrlEncoded url pairs toMsg =
+    send url (UrlEncodedPayload pairs) toMsg
+
+
+{-| Check if the Beacon API is supported in this browser.
+
+Returns `True` if `navigator.sendBeacon` is available, `False` otherwise.
+This is a `Task Never Bool` because the check is synchronous and cannot fail.
+
+    Beacon.isSupported
+        |> Task.perform GotBeaconSupport
+
+-}
+isSupported : Task Never Bool
+isSupported =
+    BeaconFFI.isSupported
+
+
+
+-- INTERNAL
+
+
+{-| Create a Task that sends the beacon and returns the SendResult.
+
+Each payload variant dispatches to the appropriate FFI function to construct
+the correct JavaScript type before calling navigator.sendBeacon().
+-}
+sendTask : String -> Payload -> Task Never SendResult
+sendTask url payload =
+    case payload of
+        StringPayload str ->
+            BeaconFFI.sendStringPayload url str
+
+        JsonPayload value ->
+            BeaconFFI.sendJsonBlob url (Json.Encode.encode 0 value)
+
+        BytesPayload bytes ->
+            BeaconFFI.sendBytesPayload url bytes
+
+        FormPayload pairs ->
+            BeaconFFI.sendFormPayload url pairs
+
+        UrlEncodedPayload pairs ->
+            BeaconFFI.sendUrlEncodedPayload url pairs
+
+
+
+-- UTILITIES
+
+
+{-| Convert a Payload to a human-readable string describing its type.
+
+Returns the constructor name without the wrapped value.
+
+    payloadToString (StringPayload "hello") == "StringPayload"
+    payloadToString (JsonPayload value) == "JsonPayload"
+    payloadToString (BytesPayload bytes) == "BytesPayload"
+    payloadToString (FormPayload pairs) == "FormPayload"
+    payloadToString (UrlEncodedPayload pairs) == "UrlEncodedPayload"
+
+-}
+payloadToString : Payload -> String
+payloadToString payload =
+    case payload of
+        StringPayload _ ->
+            "StringPayload"
+
+        JsonPayload _ ->
+            "JsonPayload"
+
+        BytesPayload _ ->
+            "BytesPayload"
+
+        FormPayload _ ->
+            "FormPayload"
+
+        UrlEncodedPayload _ ->
+            "UrlEncodedPayload"
+
+
+{-| Get the Content-Type that will be used when sending this payload.
+
+    payloadContentType (StringPayload "hi") == "text/plain;charset=UTF-8"
+    payloadContentType (JsonPayload value) == "application/json"
+    payloadContentType (BytesPayload bytes) == "application/octet-stream"
+    payloadContentType (FormPayload pairs) == "multipart/form-data"
+    payloadContentType (UrlEncodedPayload pairs) == "application/x-www-form-urlencoded"
+
+-}
+payloadContentType : Payload -> String
+payloadContentType payload =
+    case payload of
+        StringPayload _ ->
+            "text/plain;charset=UTF-8"
+
+        JsonPayload _ ->
+            "application/json"
+
+        BytesPayload _ ->
+            "application/octet-stream"
+
+        FormPayload _ ->
+            "multipart/form-data"
+
+        UrlEncodedPayload _ ->
+            "application/x-www-form-urlencoded"
+
+
+{-| Encode a payload as a string representation where possible.
+
+Returns `Just` the string representation for `StringPayload` and `JsonPayload`,
+and `Nothing` for binary or form-based payloads.
+
+    encodePayloadAsString (StringPayload "hello") == Just "hello"
+    encodePayloadAsString (JsonPayload (Json.Encode.int 42)) == Just "42"
+    encodePayloadAsString (BytesPayload bytes) == Nothing
+
+-}
+encodePayloadAsString : Payload -> Maybe String
+encodePayloadAsString payload =
+    case payload of
+        StringPayload str ->
+            Just str
+
+        JsonPayload value ->
+            Just (Json.Encode.encode 0 value)
+
+        BytesPayload _ ->
+            Nothing
+
+        FormPayload _ ->
+            Nothing
+
+        UrlEncodedPayload _ ->
+            Nothing
+
+
+{-| Check whether a payload is string-based (can be represented as text).
+
+Returns `True` for `StringPayload` and `JsonPayload`, `False` for all others.
+
+    isStringBased (StringPayload "hello") == True
+    isStringBased (JsonPayload value) == True
+    isStringBased (BytesPayload bytes) == False
+    isStringBased (FormPayload pairs) == False
+    isStringBased (UrlEncodedPayload pairs) == False
+
+-}
+isStringBased : Payload -> Bool
+isStringBased payload =
+    case payload of
+        StringPayload _ ->
+            True
+
+        JsonPayload _ ->
+            True
+
+        BytesPayload _ ->
+            False
+
+        FormPayload _ ->
+            False
+
+        UrlEncodedPayload _ ->
+            False
+
+
+{-| Check whether a payload carries binary data.
+
+Returns `True` only for `BytesPayload`.
+
+    isBinaryPayload (BytesPayload bytes) == True
+    isBinaryPayload (StringPayload "hello") == False
+    isBinaryPayload (JsonPayload value) == False
+    isBinaryPayload (FormPayload pairs) == False
+    isBinaryPayload (UrlEncodedPayload pairs) == False
+
+-}
+isBinaryPayload : Payload -> Bool
+isBinaryPayload payload =
+    case payload of
+        BytesPayload _ ->
+            True
+
+        StringPayload _ ->
+            False
+
+        JsonPayload _ ->
+            False
+
+        FormPayload _ ->
+            False
+
+        UrlEncodedPayload _ ->
+            False
+
+
+{-| Check whether a payload contains key-value pairs.
+
+Returns `True` for `FormPayload` and `UrlEncodedPayload`, `False` for all others.
+
+    isPairBased (FormPayload pairs) == True
+    isPairBased (UrlEncodedPayload pairs) == True
+    isPairBased (StringPayload "hello") == False
+    isPairBased (JsonPayload value) == False
+    isPairBased (BytesPayload bytes) == False
+
+-}
+isPairBased : Payload -> Bool
+isPairBased payload =
+    case payload of
+        FormPayload _ ->
+            True
+
+        UrlEncodedPayload _ ->
+            True
+
+        StringPayload _ ->
+            False
+
+        JsonPayload _ ->
+            False
+
+        BytesPayload _ ->
+            False
+
+
+{-| Format a list of key-value pairs as a human-readable form data string.
+
+Each pair is formatted as `key=value` and separated by `&`.
+
+    formatFormPairs [ ( "event", "click" ), ( "page", "/home" ) ]
+        == "event=click&page=/home"
+
+    formatFormPairs [] == ""
+
+-}
+formatFormPairs : List ( String, String ) -> String
+formatFormPairs pairs =
+    formatPairsHelper pairs
+
+
+{-| Format a list of key-value pairs as a URL-encoded query string.
+
+Each pair is formatted as `key=value` and separated by `&`.
+
+    formatUrlEncodedPairs [ ( "q", "search" ), ( "page", "1" ) ]
+        == "q=search&page=1"
+
+    formatUrlEncodedPairs [] == ""
+
+-}
+formatUrlEncodedPairs : List ( String, String ) -> String
+formatUrlEncodedPairs pairs =
+    formatPairsHelper pairs
+
+
+{-| Internal helper to format key-value pairs as key=value&key=value strings. -}
+formatPairsHelper : List ( String, String ) -> String
+formatPairsHelper pairs =
+    pairs
+        |> List.map formatOnePair
+        |> String.join "&"
+
+
+{-| Format a single key-value pair as key=value. -}
+formatOnePair : ( String, String ) -> String
+formatOnePair pair =
+    Tuple.first pair ++ "=" ++ Tuple.second pair
+
+
+{-| Get a human-readable summary of a payload for logging purposes.
+
+Includes the payload type and a preview of the content.
+
+    payloadSummary (StringPayload "hello") == "StringPayload: hello"
+    payloadSummary (BytesPayload bytes) == "BytesPayload: <binary data>"
+    payloadSummary (FormPayload [ ( "k", "v" ) ]) == "FormPayload: k=v"
+
+-}
+payloadSummary : Payload -> String
+payloadSummary payload =
+    let
+        typeName =
+            payloadToString payload
+
+        content =
+            payloadContentPreview payload
+    in
+    typeName ++ ": " ++ content
+
+
+{-| Get a content preview for a payload. -}
+payloadContentPreview : Payload -> String
+payloadContentPreview payload =
+    case payload of
+        StringPayload str ->
+            str
+
+        JsonPayload value ->
+            Json.Encode.encode 0 value
+
+        BytesPayload _ ->
+            "<binary data>"
+
+        FormPayload pairs ->
+            formatPairsHelper pairs
+
+        UrlEncodedPayload pairs ->
+            formatPairsHelper pairs
+
+
+{-| Apply a function to the string inside a StringPayload. Returns the
+payload unchanged for all other payload types.
+
+    mapPayloadString String.toUpper (StringPayload "hello")
+        == StringPayload "HELLO"
+
+    mapPayloadString String.toUpper (FormPayload [ ( "k", "v" ) ])
+        == FormPayload [ ( "k", "v" ) ]
+
+-}
+mapPayloadString : (String -> String) -> Payload -> Payload
+mapPayloadString f payload =
+    case payload of
+        StringPayload str ->
+            StringPayload (f str)
+
+        JsonPayload value ->
+            JsonPayload value
+
+        BytesPayload bytes ->
+            BytesPayload bytes
+
+        FormPayload pairs ->
+            FormPayload pairs
+
+        UrlEncodedPayload pairs ->
+            UrlEncodedPayload pairs
+
+
+{-| Get the number of key-value pairs in a form or URL-encoded payload.
+
+Returns `Just count` for `FormPayload` and `UrlEncodedPayload`, and
+`Nothing` for all other payload types.
+
+    payloadPairCount (FormPayload [ ( "a", "1" ), ( "b", "2" ) ]) == Just 2
+    payloadPairCount (StringPayload "hello") == Nothing
+
+-}
+payloadPairCount : Payload -> Maybe Int
+payloadPairCount payload =
+    case payload of
+        StringPayload _ ->
+            Nothing
+
+        JsonPayload _ ->
+            Nothing
+
+        BytesPayload _ ->
+            Nothing
+
+        FormPayload pairs ->
+            Just (List.length pairs)
+
+        UrlEncodedPayload pairs ->
+            Just (List.length pairs)
+
+
+{-| Convert a SendResult to a human-readable string.
+
+    sendResultToString Queued == "Queued"
+    sendResultToString Rejected == "Rejected"
+
+-}
+sendResultToString : SendResult -> String
+sendResultToString result =
+    case result of
+        Queued ->
+            "Queued"
+
+        Rejected ->
+            "Rejected"
+
+
+{-| Check if a SendResult indicates the beacon was successfully queued.
+
+    isQueued Queued == True
+    isQueued Rejected == False
+
+-}
+isQueued : SendResult -> Bool
+isQueued result =
+    case result of
+        Queued ->
+            True
+
+        Rejected ->
+            False
+
+
+{-| Check if a SendResult indicates the beacon was rejected.
+
+    isRejected Rejected == True
+    isRejected Queued == False
+
+-}
+isRejected : SendResult -> Bool
+isRejected result =
+    case result of
+        Queued ->
+            False
+
+        Rejected ->
+            True

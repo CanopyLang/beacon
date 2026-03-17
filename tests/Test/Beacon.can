@@ -1,0 +1,433 @@
+module Test.Beacon exposing (main, tests)
+
+import Basics exposing (..)
+import Beacon exposing (Payload(..), SendResult(..))
+import Bytes exposing (Bytes)
+import Bytes.Encode
+import Json.Encode
+import Maybe exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "Beacon"
+        [ payloadToStringTests
+        , sendResultToStringTests
+        , isQueuedTests
+        , isRejectedTests
+        , payloadContentTypeTests
+        , encodePayloadAsStringTests
+        , isStringBasedTests
+        , isBinaryPayloadTests
+        , isPairBasedTests
+        , formatFormPairsTests
+        , formatUrlEncodedPairsTests
+        , payloadSummaryTests
+        , mapPayloadStringTests
+        , payloadPairCountTests
+        ]
+
+
+
+-- PAYLOAD TO STRING
+
+
+payloadToStringTests : Test
+payloadToStringTests =
+    describe "payloadToString"
+        [ test "StringPayload" <|
+            \() ->
+                Beacon.payloadToString (StringPayload "hello")
+                    |> Expect.equal "StringPayload"
+        , test "JsonPayload" <|
+            \() ->
+                Beacon.payloadToString (JsonPayload (Json.Encode.string "test"))
+                    |> Expect.equal "JsonPayload"
+        , test "BytesPayload" <|
+            \() ->
+                Beacon.payloadToString (BytesPayload (Bytes.Encode.encode (Bytes.Encode.unsignedInt8 0)))
+                    |> Expect.equal "BytesPayload"
+        , test "FormPayload" <|
+            \() ->
+                Beacon.payloadToString (FormPayload [ ( "key", "value" ) ])
+                    |> Expect.equal "FormPayload"
+        , test "UrlEncodedPayload" <|
+            \() ->
+                Beacon.payloadToString (UrlEncodedPayload [ ( "key", "value" ) ])
+                    |> Expect.equal "UrlEncodedPayload"
+        ]
+
+
+
+-- PAYLOAD CONTENT TYPE
+
+
+payloadContentTypeTests : Test
+payloadContentTypeTests =
+    describe "payloadContentType"
+        [ test "StringPayload" <|
+            \() ->
+                Beacon.payloadContentType (StringPayload "hello")
+                    |> Expect.equal "text/plain;charset=UTF-8"
+        , test "JsonPayload" <|
+            \() ->
+                Beacon.payloadContentType (JsonPayload (Json.Encode.string "test"))
+                    |> Expect.equal "application/json"
+        , test "BytesPayload" <|
+            \() ->
+                Beacon.payloadContentType (BytesPayload (Bytes.Encode.encode (Bytes.Encode.unsignedInt8 0)))
+                    |> Expect.equal "application/octet-stream"
+        , test "FormPayload" <|
+            \() ->
+                Beacon.payloadContentType (FormPayload [ ( "k", "v" ) ])
+                    |> Expect.equal "multipart/form-data"
+        , test "UrlEncodedPayload" <|
+            \() ->
+                Beacon.payloadContentType (UrlEncodedPayload [ ( "k", "v" ) ])
+                    |> Expect.equal "application/x-www-form-urlencoded"
+        ]
+
+
+
+-- ENCODE PAYLOAD AS STRING
+
+
+encodePayloadAsStringTests : Test
+encodePayloadAsStringTests =
+    describe "encodePayloadAsString"
+        [ test "StringPayload returns Just" <|
+            \() ->
+                Beacon.encodePayloadAsString (StringPayload "hello world")
+                    |> Expect.equal (Just "hello world")
+        , test "StringPayload empty" <|
+            \() ->
+                Beacon.encodePayloadAsString (StringPayload "")
+                    |> Expect.equal (Just "")
+        , test "JsonPayload int" <|
+            \() ->
+                Beacon.encodePayloadAsString (JsonPayload (Json.Encode.int 42))
+                    |> Expect.equal (Just "42")
+        , test "JsonPayload string" <|
+            \() ->
+                Beacon.encodePayloadAsString (JsonPayload (Json.Encode.string "test"))
+                    |> Expect.equal (Just "\"test\"")
+        , test "JsonPayload null" <|
+            \() ->
+                Beacon.encodePayloadAsString (JsonPayload Json.Encode.null)
+                    |> Expect.equal (Just "null")
+        , test "BytesPayload returns Nothing" <|
+            \() ->
+                Beacon.encodePayloadAsString (BytesPayload (Bytes.Encode.encode (Bytes.Encode.unsignedInt8 0)))
+                    |> Expect.equal Nothing
+        , test "FormPayload returns Nothing" <|
+            \() ->
+                Beacon.encodePayloadAsString (FormPayload [ ( "k", "v" ) ])
+                    |> Expect.equal Nothing
+        , test "UrlEncodedPayload returns Nothing" <|
+            \() ->
+                Beacon.encodePayloadAsString (UrlEncodedPayload [ ( "k", "v" ) ])
+                    |> Expect.equal Nothing
+        ]
+
+
+
+-- IS STRING BASED
+
+
+isStringBasedTests : Test
+isStringBasedTests =
+    describe "isStringBased"
+        [ test "StringPayload is string-based" <|
+            \() ->
+                Beacon.isStringBased (StringPayload "hello")
+                    |> Expect.equal True
+        , test "JsonPayload is string-based" <|
+            \() ->
+                Beacon.isStringBased (JsonPayload (Json.Encode.int 1))
+                    |> Expect.equal True
+        , test "BytesPayload is not string-based" <|
+            \() ->
+                Beacon.isStringBased (BytesPayload (Bytes.Encode.encode (Bytes.Encode.unsignedInt8 0)))
+                    |> Expect.equal False
+        , test "FormPayload is not string-based" <|
+            \() ->
+                Beacon.isStringBased (FormPayload [ ( "k", "v" ) ])
+                    |> Expect.equal False
+        , test "UrlEncodedPayload is not string-based" <|
+            \() ->
+                Beacon.isStringBased (UrlEncodedPayload [ ( "k", "v" ) ])
+                    |> Expect.equal False
+        ]
+
+
+
+-- IS BINARY PAYLOAD
+
+
+isBinaryPayloadTests : Test
+isBinaryPayloadTests =
+    describe "isBinaryPayload"
+        [ test "BytesPayload is binary" <|
+            \() ->
+                Beacon.isBinaryPayload (BytesPayload (Bytes.Encode.encode (Bytes.Encode.unsignedInt8 0)))
+                    |> Expect.equal True
+        , test "StringPayload is not binary" <|
+            \() ->
+                Beacon.isBinaryPayload (StringPayload "hello")
+                    |> Expect.equal False
+        , test "JsonPayload is not binary" <|
+            \() ->
+                Beacon.isBinaryPayload (JsonPayload (Json.Encode.int 1))
+                    |> Expect.equal False
+        , test "FormPayload is not binary" <|
+            \() ->
+                Beacon.isBinaryPayload (FormPayload [ ( "k", "v" ) ])
+                    |> Expect.equal False
+        , test "UrlEncodedPayload is not binary" <|
+            \() ->
+                Beacon.isBinaryPayload (UrlEncodedPayload [ ( "k", "v" ) ])
+                    |> Expect.equal False
+        ]
+
+
+
+-- IS PAIR BASED
+
+
+isPairBasedTests : Test
+isPairBasedTests =
+    describe "isPairBased"
+        [ test "FormPayload is pair-based" <|
+            \() ->
+                Beacon.isPairBased (FormPayload [ ( "k", "v" ) ])
+                    |> Expect.equal True
+        , test "UrlEncodedPayload is pair-based" <|
+            \() ->
+                Beacon.isPairBased (UrlEncodedPayload [ ( "k", "v" ) ])
+                    |> Expect.equal True
+        , test "StringPayload is not pair-based" <|
+            \() ->
+                Beacon.isPairBased (StringPayload "hello")
+                    |> Expect.equal False
+        , test "JsonPayload is not pair-based" <|
+            \() ->
+                Beacon.isPairBased (JsonPayload (Json.Encode.int 1))
+                    |> Expect.equal False
+        , test "BytesPayload is not pair-based" <|
+            \() ->
+                Beacon.isPairBased (BytesPayload (Bytes.Encode.encode (Bytes.Encode.unsignedInt8 0)))
+                    |> Expect.equal False
+        ]
+
+
+
+-- FORMAT FORM PAIRS
+
+
+formatFormPairsTests : Test
+formatFormPairsTests =
+    describe "formatFormPairs"
+        [ test "empty list" <|
+            \() ->
+                Beacon.formatFormPairs []
+                    |> Expect.equal ""
+        , test "single pair" <|
+            \() ->
+                Beacon.formatFormPairs [ ( "event", "click" ) ]
+                    |> Expect.equal "event=click"
+        , test "multiple pairs" <|
+            \() ->
+                Beacon.formatFormPairs [ ( "event", "click" ), ( "page", "/home" ) ]
+                    |> Expect.equal "event=click&page=/home"
+        , test "three pairs" <|
+            \() ->
+                Beacon.formatFormPairs [ ( "a", "1" ), ( "b", "2" ), ( "c", "3" ) ]
+                    |> Expect.equal "a=1&b=2&c=3"
+        ]
+
+
+
+-- FORMAT URL ENCODED PAIRS
+
+
+formatUrlEncodedPairsTests : Test
+formatUrlEncodedPairsTests =
+    describe "formatUrlEncodedPairs"
+        [ test "empty list" <|
+            \() ->
+                Beacon.formatUrlEncodedPairs []
+                    |> Expect.equal ""
+        , test "single pair" <|
+            \() ->
+                Beacon.formatUrlEncodedPairs [ ( "q", "search" ) ]
+                    |> Expect.equal "q=search"
+        , test "multiple pairs" <|
+            \() ->
+                Beacon.formatUrlEncodedPairs [ ( "q", "search" ), ( "page", "1" ) ]
+                    |> Expect.equal "q=search&page=1"
+        ]
+
+
+
+-- PAYLOAD SUMMARY
+
+
+payloadSummaryTests : Test
+payloadSummaryTests =
+    describe "payloadSummary"
+        [ test "StringPayload" <|
+            \() ->
+                Beacon.payloadSummary (StringPayload "hello")
+                    |> Expect.equal "StringPayload: hello"
+        , test "JsonPayload" <|
+            \() ->
+                Beacon.payloadSummary (JsonPayload (Json.Encode.int 42))
+                    |> Expect.equal "JsonPayload: 42"
+        , test "BytesPayload" <|
+            \() ->
+                Beacon.payloadSummary (BytesPayload (Bytes.Encode.encode (Bytes.Encode.unsignedInt8 0)))
+                    |> Expect.equal "BytesPayload: <binary data>"
+        , test "FormPayload" <|
+            \() ->
+                Beacon.payloadSummary (FormPayload [ ( "event", "click" ) ])
+                    |> Expect.equal "FormPayload: event=click"
+        , test "UrlEncodedPayload" <|
+            \() ->
+                Beacon.payloadSummary (UrlEncodedPayload [ ( "q", "test" ) ])
+                    |> Expect.equal "UrlEncodedPayload: q=test"
+        ]
+
+
+
+-- MAP PAYLOAD STRING
+
+
+mapPayloadStringTests : Test
+mapPayloadStringTests =
+    describe "mapPayloadString"
+        [ test "transforms StringPayload content" <|
+            \() ->
+                Beacon.mapPayloadString String.toUpper (StringPayload "hello")
+                    |> Beacon.encodePayloadAsString
+                    |> Expect.equal (Just "HELLO")
+        , test "StringPayload with reverse" <|
+            \() ->
+                Beacon.mapPayloadString String.reverse (StringPayload "abc")
+                    |> Beacon.encodePayloadAsString
+                    |> Expect.equal (Just "cba")
+        , test "JsonPayload unchanged" <|
+            \() ->
+                Beacon.mapPayloadString String.toUpper (JsonPayload (Json.Encode.int 1))
+                    |> Beacon.encodePayloadAsString
+                    |> Expect.equal (Just "1")
+        , test "BytesPayload unchanged" <|
+            \() ->
+                Beacon.mapPayloadString String.toUpper (BytesPayload (Bytes.Encode.encode (Bytes.Encode.unsignedInt8 0)))
+                    |> Beacon.payloadToString
+                    |> Expect.equal "BytesPayload"
+        , test "FormPayload unchanged" <|
+            \() ->
+                Beacon.mapPayloadString String.toUpper (FormPayload [ ( "k", "v" ) ])
+                    |> Beacon.payloadToString
+                    |> Expect.equal "FormPayload"
+        , test "UrlEncodedPayload unchanged" <|
+            \() ->
+                Beacon.mapPayloadString String.toUpper (UrlEncodedPayload [ ( "k", "v" ) ])
+                    |> Beacon.payloadToString
+                    |> Expect.equal "UrlEncodedPayload"
+        ]
+
+
+
+-- PAYLOAD PAIR COUNT
+
+
+payloadPairCountTests : Test
+payloadPairCountTests =
+    describe "payloadPairCount"
+        [ test "FormPayload with two pairs" <|
+            \() ->
+                Beacon.payloadPairCount (FormPayload [ ( "a", "1" ), ( "b", "2" ) ])
+                    |> Expect.equal (Just 2)
+        , test "FormPayload empty" <|
+            \() ->
+                Beacon.payloadPairCount (FormPayload [])
+                    |> Expect.equal (Just 0)
+        , test "UrlEncodedPayload with one pair" <|
+            \() ->
+                Beacon.payloadPairCount (UrlEncodedPayload [ ( "q", "test" ) ])
+                    |> Expect.equal (Just 1)
+        , test "StringPayload returns Nothing" <|
+            \() ->
+                Beacon.payloadPairCount (StringPayload "hello")
+                    |> Expect.equal Nothing
+        , test "JsonPayload returns Nothing" <|
+            \() ->
+                Beacon.payloadPairCount (JsonPayload (Json.Encode.int 1))
+                    |> Expect.equal Nothing
+        , test "BytesPayload returns Nothing" <|
+            \() ->
+                Beacon.payloadPairCount (BytesPayload (Bytes.Encode.encode (Bytes.Encode.unsignedInt8 0)))
+                    |> Expect.equal Nothing
+        ]
+
+
+
+-- SEND RESULT TO STRING
+
+
+sendResultToStringTests : Test
+sendResultToStringTests =
+    describe "sendResultToString"
+        [ test "Queued" <|
+            \() ->
+                Beacon.sendResultToString Queued
+                    |> Expect.equal "Queued"
+        , test "Rejected" <|
+            \() ->
+                Beacon.sendResultToString Rejected
+                    |> Expect.equal "Rejected"
+        ]
+
+
+
+-- IS QUEUED
+
+
+isQueuedTests : Test
+isQueuedTests =
+    describe "isQueued"
+        [ test "Queued returns True" <|
+            \() ->
+                Beacon.isQueued Queued
+                    |> Expect.equal True
+        , test "Rejected returns False" <|
+            \() ->
+                Beacon.isQueued Rejected
+                    |> Expect.equal False
+        ]
+
+
+
+-- IS REJECTED
+
+
+isRejectedTests : Test
+isRejectedTests =
+    describe "isRejected"
+        [ test "Rejected returns True" <|
+            \() ->
+                Beacon.isRejected Rejected
+                    |> Expect.equal True
+        , test "Queued returns False" <|
+            \() ->
+                Beacon.isRejected Queued
+                    |> Expect.equal False
+        ]

@@ -1,0 +1,299 @@
+module Test.Beacon.Internal exposing (main, tests)
+
+import Basics exposing (..)
+import Beacon.Internal exposing (PayloadKind(..))
+import Json.Encode
+import Maybe exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "Beacon.Internal"
+        [ classifyPayloadTests
+        , kindToStringTests
+        , kindToContentTypeTests
+        , payloadToKindTests
+        , buildStringPayloadTests
+        , buildJsonPayloadTests
+        , buildFormPayloadTests
+        , buildUrlEncodedPayloadTests
+        , roundTripTests
+        ]
+
+
+
+-- CLASSIFY PAYLOAD
+
+
+classifyPayloadTests : Test
+classifyPayloadTests =
+    describe "classifyPayload"
+        [ test "string returns StringKind" <|
+            \() ->
+                Beacon.Internal.classifyPayload "string"
+                    |> Expect.equal (Just StringKind)
+        , test "json returns JsonKind" <|
+            \() ->
+                Beacon.Internal.classifyPayload "json"
+                    |> Expect.equal (Just JsonKind)
+        , test "bytes returns BytesKind" <|
+            \() ->
+                Beacon.Internal.classifyPayload "bytes"
+                    |> Expect.equal (Just BytesKind)
+        , test "form returns FormKind" <|
+            \() ->
+                Beacon.Internal.classifyPayload "form"
+                    |> Expect.equal (Just FormKind)
+        , test "urlencoded returns UrlEncodedKind" <|
+            \() ->
+                Beacon.Internal.classifyPayload "urlencoded"
+                    |> Expect.equal (Just UrlEncodedKind)
+        , test "unknown returns Nothing" <|
+            \() ->
+                Beacon.Internal.classifyPayload "unknown"
+                    |> Expect.equal Nothing
+        , test "empty string returns Nothing" <|
+            \() ->
+                Beacon.Internal.classifyPayload ""
+                    |> Expect.equal Nothing
+        ]
+
+
+
+-- KIND TO STRING
+
+
+kindToStringTests : Test
+kindToStringTests =
+    describe "kindToString"
+        [ test "StringKind" <|
+            \() ->
+                Beacon.Internal.kindToString StringKind
+                    |> Expect.equal "string"
+        , test "JsonKind" <|
+            \() ->
+                Beacon.Internal.kindToString JsonKind
+                    |> Expect.equal "json"
+        , test "BytesKind" <|
+            \() ->
+                Beacon.Internal.kindToString BytesKind
+                    |> Expect.equal "bytes"
+        , test "FormKind" <|
+            \() ->
+                Beacon.Internal.kindToString FormKind
+                    |> Expect.equal "form"
+        , test "UrlEncodedKind" <|
+            \() ->
+                Beacon.Internal.kindToString UrlEncodedKind
+                    |> Expect.equal "urlencoded"
+        ]
+
+
+
+-- KIND TO CONTENT TYPE
+
+
+kindToContentTypeTests : Test
+kindToContentTypeTests =
+    describe "kindToContentType"
+        [ test "StringKind has text/plain content type" <|
+            \() ->
+                Beacon.Internal.kindToContentType StringKind
+                    |> Expect.equal "text/plain;charset=UTF-8"
+        , test "JsonKind has application/json content type" <|
+            \() ->
+                Beacon.Internal.kindToContentType JsonKind
+                    |> Expect.equal "application/json"
+        , test "BytesKind has application/octet-stream content type" <|
+            \() ->
+                Beacon.Internal.kindToContentType BytesKind
+                    |> Expect.equal "application/octet-stream"
+        , test "FormKind has multipart/form-data content type" <|
+            \() ->
+                Beacon.Internal.kindToContentType FormKind
+                    |> Expect.equal "multipart/form-data"
+        , test "UrlEncodedKind has application/x-www-form-urlencoded content type" <|
+            \() ->
+                Beacon.Internal.kindToContentType UrlEncodedKind
+                    |> Expect.equal "application/x-www-form-urlencoded"
+        ]
+
+
+
+-- PAYLOAD TO KIND
+
+
+payloadToKindTests : Test
+payloadToKindTests =
+    describe "payloadToKind"
+        [ test "0 returns StringKind" <|
+            \() ->
+                Beacon.Internal.payloadToKind 0
+                    |> Expect.equal (Just StringKind)
+        , test "1 returns JsonKind" <|
+            \() ->
+                Beacon.Internal.payloadToKind 1
+                    |> Expect.equal (Just JsonKind)
+        , test "2 returns BytesKind" <|
+            \() ->
+                Beacon.Internal.payloadToKind 2
+                    |> Expect.equal (Just BytesKind)
+        , test "3 returns FormKind" <|
+            \() ->
+                Beacon.Internal.payloadToKind 3
+                    |> Expect.equal (Just FormKind)
+        , test "4 returns UrlEncodedKind" <|
+            \() ->
+                Beacon.Internal.payloadToKind 4
+                    |> Expect.equal (Just UrlEncodedKind)
+        , test "5 returns Nothing" <|
+            \() ->
+                Beacon.Internal.payloadToKind 5
+                    |> Expect.equal Nothing
+        , test "negative returns Nothing" <|
+            \() ->
+                Beacon.Internal.payloadToKind -1
+                    |> Expect.equal Nothing
+        ]
+
+
+
+-- BUILD STRING PAYLOAD
+
+
+buildStringPayloadTests : Test
+buildStringPayloadTests =
+    describe "buildStringPayload"
+        [ test "returns the string as-is" <|
+            \() ->
+                Beacon.Internal.buildStringPayload "hello"
+                    |> Expect.equal "hello"
+        , test "empty string" <|
+            \() ->
+                Beacon.Internal.buildStringPayload ""
+                    |> Expect.equal ""
+        , test "string with special characters" <|
+            \() ->
+                Beacon.Internal.buildStringPayload "hello\nworld"
+                    |> Expect.equal "hello\nworld"
+        ]
+
+
+
+-- BUILD JSON PAYLOAD
+
+
+buildJsonPayloadTests : Test
+buildJsonPayloadTests =
+    describe "buildJsonPayload"
+        [ test "encodes int" <|
+            \() ->
+                Beacon.Internal.buildJsonPayload (Json.Encode.int 42)
+                    |> Expect.equal "42"
+        , test "encodes string" <|
+            \() ->
+                Beacon.Internal.buildJsonPayload (Json.Encode.string "test")
+                    |> Expect.equal "\"test\""
+        , test "encodes null" <|
+            \() ->
+                Beacon.Internal.buildJsonPayload Json.Encode.null
+                    |> Expect.equal "null"
+        , test "encodes bool true" <|
+            \() ->
+                Beacon.Internal.buildJsonPayload (Json.Encode.bool True)
+                    |> Expect.equal "true"
+        , test "encodes float" <|
+            \() ->
+                Beacon.Internal.buildJsonPayload (Json.Encode.float 3.14)
+                    |> Expect.equal "3.14"
+        ]
+
+
+
+-- BUILD FORM PAYLOAD
+
+
+buildFormPayloadTests : Test
+buildFormPayloadTests =
+    describe "buildFormPayload"
+        [ test "empty list returns empty string" <|
+            \() ->
+                Beacon.Internal.buildFormPayload []
+                    |> Expect.equal ""
+        , test "single pair" <|
+            \() ->
+                Beacon.Internal.buildFormPayload [ ( "key", "value" ) ]
+                    |> Expect.equal "key=value"
+        , test "multiple pairs" <|
+            \() ->
+                Beacon.Internal.buildFormPayload [ ( "a", "1" ), ( "b", "2" ) ]
+                    |> Expect.equal "a=1&b=2"
+        , test "three pairs" <|
+            \() ->
+                Beacon.Internal.buildFormPayload [ ( "x", "1" ), ( "y", "2" ), ( "z", "3" ) ]
+                    |> Expect.equal "x=1&y=2&z=3"
+        ]
+
+
+
+-- BUILD URL ENCODED PAYLOAD
+
+
+buildUrlEncodedPayloadTests : Test
+buildUrlEncodedPayloadTests =
+    describe "buildUrlEncodedPayload"
+        [ test "empty list returns empty string" <|
+            \() ->
+                Beacon.Internal.buildUrlEncodedPayload []
+                    |> Expect.equal ""
+        , test "single pair" <|
+            \() ->
+                Beacon.Internal.buildUrlEncodedPayload [ ( "q", "search" ) ]
+                    |> Expect.equal "q=search"
+        , test "multiple pairs" <|
+            \() ->
+                Beacon.Internal.buildUrlEncodedPayload [ ( "q", "test" ), ( "page", "1" ) ]
+                    |> Expect.equal "q=test&page=1"
+        ]
+
+
+
+-- ROUND TRIP TESTS
+
+
+roundTripTests : Test
+roundTripTests =
+    describe "round trips"
+        [ test "kindToString >> classifyPayload round-trips StringKind" <|
+            \() ->
+                Beacon.Internal.kindToString StringKind
+                    |> Beacon.Internal.classifyPayload
+                    |> Expect.equal (Just StringKind)
+        , test "kindToString >> classifyPayload round-trips JsonKind" <|
+            \() ->
+                Beacon.Internal.kindToString JsonKind
+                    |> Beacon.Internal.classifyPayload
+                    |> Expect.equal (Just JsonKind)
+        , test "kindToString >> classifyPayload round-trips BytesKind" <|
+            \() ->
+                Beacon.Internal.kindToString BytesKind
+                    |> Beacon.Internal.classifyPayload
+                    |> Expect.equal (Just BytesKind)
+        , test "kindToString >> classifyPayload round-trips FormKind" <|
+            \() ->
+                Beacon.Internal.kindToString FormKind
+                    |> Beacon.Internal.classifyPayload
+                    |> Expect.equal (Just FormKind)
+        , test "kindToString >> classifyPayload round-trips UrlEncodedKind" <|
+            \() ->
+                Beacon.Internal.kindToString UrlEncodedKind
+                    |> Beacon.Internal.classifyPayload
+                    |> Expect.equal (Just UrlEncodedKind)
+        ]
